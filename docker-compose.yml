@@ -1,0 +1,16 @@
+services:
+  voice-agent:
+    build: .
+    image: voice-agent:local
+    ports:
+      - "${VOICE_RUNTIME_PORT:-8088}:8088"
+    env_file:
+      - .env.example
+    environment:
+      VOICE_RUNTIME_PORT: 8088
+      HERMES_INTEGRATION_MODE: fake
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5

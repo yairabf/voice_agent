@@ -1,0 +1,448 @@
+# PRD-001 — Hermes Voice Runtime Foundation
+
+## Project
+
+- Project: `voice_agent`
+- Local path: `/home/ubuntu/workspace/projects/voice_agent`
+- Kanban board: `voice-agent`
+- Status: Approved by Yair for Kanban ticket creation and coder routing
+- Ticket timing: Approved; coordinator may next create exactly one project-scoped Kanban ticket and copy this PRD to `docs/tasks/<ticket-id>-prd.md`.
+
+## Overview
+
+Build the first milestone for the Hermes Voice Runtime project: a standalone backend runtime foundation that exposes a stable API for communicating with a dedicated Hermes voice-agent profile in the future.
+
+This milestone intentionally excludes telephony and audio. It establishes the service, runtime API, session lifecycle, streaming contract, tests, GitHub PR workflow, CI, and coordinator-triggered deployment path that future LiveKit/audio/telephony work can build on.
+
+## Goals
+
+- Build a standalone Python backend service for `voice_agent`.
+- Expose a transport-agnostic runtime API suitable for future LiveKit, CLI, web, mobile, and tests.
+- Support exactly one active runtime session for milestone 001.
+- Stream Hermes/runtime responses via SSE.
+- Keep runtime business logic independent from any specific Hermes transport through a `HermesClient` abstraction.
+- Prepare the repository for GitHub PR-based development and GitHub Actions CI.
+- Provide coordinator-triggered deployment scripts/docs for deployment into the Hermes instance after Yair approves and merges the PR.
+
+## Non-goals / out of scope
+
+- LiveKit integration.
+- Phone calls.
+- Audio streaming.
+- STT/TTS.
+- Persistent memory owned by the runtime.
+- Dedicated runtime-owned tool execution/orchestration.
+- Disabling Hermes profile tools if Hermes itself triggers them.
+- Authentication.
+- Dashboard/UI.
+- Automatic profile creation.
+- 50 concurrent sessions in milestone 001.
+- Fully automatic GitHub-to-VM CD on merge without coordinator action.
+
+## Product decisions captured from Yair
+
+### Implementation stack
+
+Use Python for the runtime foundation. FastAPI is the recommended web framework unless coder discovers a strong technical reason to choose otherwise and reports it before implementation diverges.
+
+### Naming and repository path
+
+Keep the actual local project/repository directory as:
+
+```text
+/home/ubuntu/workspace/projects/voice_agent
+```
+
+Do not rename it to `hermes-voice-runtime`. The service/runtime may be described as Hermes Voice Runtime Foundation, but repo/project naming should follow `voice_agent`.
+
+### GitHub and PR flow
+
+The implementation should end with a GitHub PR for Yair approval. Coordinator must present the PR to Yair. Merge/finalization only happens after Yair explicitly approves. After Yair reports that the PR was approved/merged, coordinator verifies `main` and performs the deployment step inside the Hermes instance.
+
+### Dedicated Hermes profile
+
+Yair will create and wire the dedicated Hermes profile later. The runtime must not create the profile automatically. Configuration should allow selecting the intended profile name, but profile creation is out of scope.
+
+Suggested config default:
+
+```env
+DEFAULT_PROFILE=voice-agent
+```
+
+### Hermes client/API abstraction
+
+Runtime business logic must use a `HermesClient` abstraction/API, not direct ad-hoc Hermes CLI calls throughout handlers or session-manager code.
+
+Yair prefers the API-oriented approach rather than direct CLI coupling. The coder should implement the clean `HermesClient` interface and use the best available Hermes programmatic/non-interactive integration path. If no suitable Hermes API exists for the required behavior, coder must document the gap and return to coordinator/Yair before replacing the API approach with a CLI-wrapper compromise.
+
+The abstraction should expose capabilities such as:
+
+- `create_session()`
+- `send_message(session_id, message)`
+- `stream_responses(session_id)`
+- `close_session(session_id)`
+
+Future implementations should be swappable without changing API/session-manager business logic.
+
+### Streaming
+
+Use Server-Sent Events (SSE) for `GET /sessions/{id}/stream` in milestone 001.
+
+### Tool execution
+
+The runtime should not build or own dedicated tools in this milestone. It also should not necessarily disable Hermes tools. If the Hermes profile internally triggers tools, that is acceptable for now. Runtime scope is API/session/process/stream lifecycle, not tool orchestration.
+
+### CI/CD
+
+CI:
+
+- The repo will use GitHub.
+- GitHub Actions should run CI on PRs.
+- CI should validate linting, type checks where applicable, tests, and Docker build.
+
+CD:
+
+- Do not require a fully automatic GitHub-to-Hermes deployment trigger in milestone 001.
+- After Yair approves and merges a `voice_agent` PR, he will notify coordinator.
+- Coordinator will then trigger/perform deployment inside the Hermes instance.
+- The project should include deployment scripts/docs sufficient for coordinator to deploy the merged `main` into the Hermes instance.
+
+### Concurrency
+
+Milestone 001 only needs to support one active session at a time.
+
+Acceptance should include:
+
+- Creating one session.
+- Sending messages to that session.
+- Streaming responses for that session.
+- Maintaining context/lifecycle for that session.
+- Cleanly closing the session.
+- Returning a clear error or rejection when a second concurrent session is attempted while one is active.
+
+Future milestones may expand concurrency.
+
+## High-level architecture
+
+```text
+Future Clients
+ ├── LiveKit
+ ├── CLI
+ ├── Web
+ ├── Mobile
+ └── Tests
+        │
+        ▼
+voice_agent Runtime API
+        │
+ Session Manager
+        │
+ HermesClient abstraction/API
+        │
+ Hermes integration implementation
+        │
+ Dedicated Hermes profile configured later by Yair
+        │
+ Hermes Runtime
+```
+
+## Proposed repository structure
+
+```text
+voice_agent/
+├── src/
+│   ├── api/
+│   ├── core/
+│   ├── hermes/
+│   ├── models/
+│   └── config/
+├── tests/
+├── docs/
+│   └── tasks/
+├── scripts/
+├── docker/
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+├── Dockerfile
+├── docker-compose.yml
+├── README.md
+└── .env.example
+```
+
+## Runtime responsibilities
+
+Owns:
+
+- Runtime API.
+- Session lifecycle.
+- Profile selection/configuration.
+- Streaming API contract.
+- Process/integration lifecycle as needed by the chosen Hermes integration.
+- Configuration.
+- Logging.
+- Health/readiness/version endpoints.
+- Deployment scripts/docs for coordinator-triggered deployment.
+
+Does not own:
+
+- Hermes reasoning.
+- Hermes memory.
+- Hermes skills.
+- Hermes prompts.
+- Hermes tools/tool orchestration.
+- Hermes workflow logic.
+- Hermes profile creation.
+
+## Session lifecycle
+
+```text
+Create Session
+      ↓
+Generate UUID
+      ↓
+Initialize HermesClient session/integration
+      ↓
+Use configured profile name
+      ↓
+Receive Messages
+      ↓
+Stream Responses via SSE
+      ↓
+Close Session
+```
+
+Each active session should track at least:
+
+```json
+{
+  "sessionId": "...",
+  "profile": "voice-agent",
+  "createdAt": "...",
+  "lastActivity": "...",
+  "status": "active"
+}
+```
+
+Because milestone 001 supports only one active session, session-manager behavior must reject or block creation of another active session with a clear API error.
+
+## API requirements
+
+### Health
+
+`GET /health`
+
+Expected: service is alive.
+
+### Ready
+
+`GET /ready`
+
+Expected: service is ready to accept a session, or returns a clear not-ready reason.
+
+### Version
+
+`GET /version`
+
+Returns:
+
+```json
+{
+  "service": "voice_agent",
+  "version": "0.1.0",
+  "commit": "<git-sha>",
+  "branch": "main",
+  "deployedAt": "<timestamp-or-null>"
+}
+```
+
+### Create session
+
+`POST /sessions`
+
+Returns:
+
+```json
+{
+  "sessionId": "..."
+}
+```
+
+If one active session already exists, returns a clear error response.
+
+### Send message
+
+`POST /sessions/{id}/messages`
+
+Request:
+
+```json
+{
+  "message": "Hello"
+}
+```
+
+Expected: message is accepted for the active session and response streaming can produce events.
+
+### Stream responses
+
+`GET /sessions/{id}/stream`
+
+Use SSE. Supports event types:
+
+- `thinking`
+- `delta`
+- `completed`
+- `error`
+
+### Close session
+
+`DELETE /sessions/{id}`
+
+Expected: active session closes cleanly and resources are released.
+
+## Configuration
+
+Example `.env.example` values:
+
+```env
+DEFAULT_PROFILE=voice-agent
+SESSION_TIMEOUT=30m
+MAX_SESSIONS=1
+LOG_LEVEL=debug
+VOICE_RUNTIME_PORT=8088
+HERMES_INTEGRATION_MODE=api
+```
+
+Optional deployment/runtime values may be documented but should not require secrets in the repo.
+
+## Logging
+
+Each request should record structured logs including:
+
+- Timestamp.
+- Request path/method.
+- Session ID when available.
+- Configured profile.
+- Latency.
+- Input length.
+- Output length when available.
+- Error details without leaking secrets.
+
+## Testing expectations
+
+Unit tests:
+
+- Configuration loading.
+- Session manager single-session behavior.
+- Session create/send/stream/close lifecycle using fake `HermesClient`.
+- API route behavior.
+- Error handling for invalid session IDs and second concurrent session attempt.
+
+Integration tests:
+
+- Service starts.
+- `/health`, `/ready`, and `/version` work.
+- One session can be created.
+- Message can be sent.
+- SSE stream returns expected event structure.
+- Session closes cleanly.
+
+If real Hermes API/profile integration is unavailable during implementation, coder must provide a fake/test `HermesClient`, document the integration gap, and keep the production integration boundary explicit.
+
+## GitHub / CI requirements
+
+- Create/use a GitHub remote for `voice_agent`.
+- Implement PR-based workflow.
+- Add GitHub Actions CI.
+- CI should run on PRs.
+- CI should include lint, type check if configured, tests, and Docker build.
+- Failures block merge.
+
+## Deployment / CD requirements
+
+- Include deployment scripts/docs for coordinator-triggered deployment into the Hermes instance after Yair approves and merges a PR.
+- Coordinator performs deployment after Yair reports merge approval/completion.
+- Deployment should be from latest `main`.
+- Provide smoke-test command/script that verifies:
+  - `GET /health`
+  - `GET /ready`
+  - `GET /version`
+  - `POST /sessions`
+  - `POST /sessions/{id}/messages`
+  - `GET /sessions/{id}/stream` event structure where practical
+  - `DELETE /sessions/{id}`
+- If deployment needs secrets or profile wiring not yet available, scripts/docs must fail clearly and safely.
+
+Recommended deployment path remains:
+
+```text
+/opt/hermes-voice-runtime/
+```
+
+but coder may propose a better Hermes-instance path if needed and must document it.
+
+## Deliverables
+
+- Python/FastAPI runtime service.
+- `HermesClient` abstraction/API.
+- Initial Hermes integration implementation or documented blocker if no suitable API exists.
+- Single-session session manager.
+- SSE streaming endpoint.
+- Health/readiness/version endpoints.
+- Configuration system and `.env.example`.
+- Structured logging.
+- Dockerfile.
+- Docker Compose.
+- OpenAPI documentation, either generated by FastAPI and/or exported spec.
+- README.
+- Architecture documentation.
+- Unit tests.
+- Integration tests using fake or real Hermes integration as feasible.
+- GitHub Actions CI pipeline.
+- Coordinator-triggered deployment scripts/docs.
+- Smoke-test script.
+
+## Acceptance criteria
+
+Milestone 001 is complete when:
+
+- Runtime starts successfully locally.
+- `/health` returns OK.
+- `/ready` reports readiness or a clear not-ready reason.
+- `/version` returns service/version/git metadata.
+- One session can be created.
+- A second concurrent session attempt is rejected with a clear error.
+- Messages can be sent to the active session.
+- Responses stream through SSE event structure.
+- Session state/context is maintained for the active session within milestone scope.
+- Session terminates cleanly.
+- Runtime uses a `HermesClient` abstraction rather than direct ad-hoc Hermes calls in business logic.
+- Runtime does not create the Hermes profile automatically.
+- Runtime does not own/dedicate custom tool execution.
+- GitHub remote/PR workflow is set up.
+- GitHub Actions CI validates PRs.
+- Docker build succeeds in CI.
+- Deployment scripts/docs exist for coordinator-triggered deployment after merge.
+- Smoke-test script exists and documents any Hermes/profile prerequisites.
+- Final implementation is presented as a GitHub PR for Yair approval.
+
+## Design/mockup requirement
+
+No designer/mockup phase is required for milestone 001 because there is no UI/dashboard in scope.
+
+## Proposed first owner after approval
+
+- Initial assignee: `coder`
+- Initial stage after ticket creation: `implementation`
+- Ticket tags after approval: `agent:coder`, `current-agent:coder`, `stage:implementation`
+
+## Approval gate
+
+Yair approved this PRD in coordinator chat. Next step is coordinator-created single Kanban ticket, with implementation routed to coder from the approved PRD.
+
+## Approval record
+
+- Approved by: Yair
+- Approval context: Coordinator chat approval after final decisions on Python/FastAPI, `voice_agent` naming, GitHub PR flow, Yair-created Hermes profile, HermesClient/API abstraction, SSE streaming, no runtime-owned tool orchestration, GitHub Actions CI, coordinator-triggered deployment after merge, and one active session for milestone 001.
+- Kanban state at approval: No implementation ticket created yet; coordinator must create exactly one project-scoped ticket next and write/copy the approved PRD to `docs/tasks/<ticket-id>-prd.md`.

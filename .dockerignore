@@ -1,0 +1,12 @@
+.git
+.venv
+__pycache__
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+dist
+build
+*.egg-info
+.env
+docs/prd-drafts
