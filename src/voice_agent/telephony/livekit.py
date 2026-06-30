@@ -179,13 +179,10 @@ class LiveKitAdapter(TelephonyProvider):
                 )
 
     def _build_audio_stream(self, track: Any) -> Any:
-        try:
-            rtc: Any = importlib.import_module("livekit.rtc")
-        except (ImportError, ModuleNotFoundError):
-            audio_stream_factory = getattr(track, "audio_stream_factory", None)
-            if callable(audio_stream_factory):
-                return audio_stream_factory(track)
-            raise
+        audio_stream_factory = getattr(track, "audio_stream_factory", None)
+        if callable(audio_stream_factory):
+            return audio_stream_factory(track)
+        rtc: Any = importlib.import_module("livekit.rtc")
         return rtc.AudioStream(track)
 
     @staticmethod
