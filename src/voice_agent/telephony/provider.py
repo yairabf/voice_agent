@@ -18,6 +18,7 @@ class IncomingCallEvent:
     room_id: str
     call_id: str = field(default_factory=lambda: f"call_{uuid4().hex}")
     caller_id: str | None = None
+    room_already_exists: bool = False
     received_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 

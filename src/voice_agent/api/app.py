@@ -363,6 +363,7 @@ def create_app() -> FastAPI:
                         call_id=call_id,
                         room_id=room_id,
                         caller_id=_livekit_webhook_caller_id(payload),
+                        room_already_exists=True,
                     )
                 )
                 call_id = call.call_id

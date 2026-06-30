@@ -44,16 +44,23 @@ class LiveKitAdapter(TelephonyProvider):
     async def prepare_room(self, event: IncomingCallEvent) -> str:
         if self.control_mode == "sdk":
             try:
-                await self._create_livekit_room(event.room_id)
+                if not event.room_already_exists:
+                    await self._create_livekit_room(event.room_id)
                 await self._start_room_audio_listener(event)
             except Exception:
                 with contextlib.suppress(Exception):
-                    await self.close_room(event.room_id)
+                    await self._close_room_resources(
+                        event.room_id,
+                        delete_livekit_room=not event.room_already_exists,
+                    )
                 raise
         self.rooms.add(event.room_id)
         return event.room_id
 
     async def close_room(self, room_id: str) -> None:
+        await self._close_room_resources(room_id, delete_livekit_room=True)
+
+    async def _close_room_resources(self, room_id: str, *, delete_livekit_room: bool) -> None:
         try:
             task = self._room_tasks.pop(room_id, None)
             if task is not None:
@@ -67,7 +74,7 @@ class LiveKitAdapter(TelephonyProvider):
                     result = disconnect()
                     if isinstance(result, Awaitable):
                         await result
-            if self.control_mode == "sdk":
+            if self.control_mode == "sdk" and delete_livekit_room:
                 await self._delete_livekit_room(room_id)
         finally:
             self.rooms.discard(room_id)

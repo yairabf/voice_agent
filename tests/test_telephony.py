@@ -435,6 +435,152 @@ async def test_livekit_sdk_room_listener_counts_rtc_audio_frames(
 
 
 @pytest.mark.asyncio
+async def test_livekit_sdk_webhook_joins_existing_sip_room_without_creating_room(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from voice_agent.core.session_manager import SessionManager
+    from voice_agent.hermes.fake import FakeHermesClient
+    from voice_agent.telephony.gateway import VoiceGateway
+    from voice_agent.telephony.livekit import LiveKitAdapter
+
+    class FakeRoom:
+        def __init__(self) -> None:
+            self.handlers: dict[str, object] = {}
+            self.connected = False
+
+        def on(self, event: str, handler: object) -> None:
+            self.handlers[event] = handler
+
+        async def connect(self, _url: str, _token: str) -> None:
+            self.connected = True
+
+        async def disconnect(self) -> None:
+            self.connected = False
+
+    fake_room = FakeRoom()
+    adapter = LiveKitAdapter(
+        livekit_url="ws://livekit:7880",
+        api_key="devkey",
+        api_secret="secret",
+        control_mode="sdk",
+        rtc_factory=lambda: fake_room,
+    )
+
+    created_rooms: list[str] = []
+
+    async def create_room(room_id: str) -> None:
+        created_rooms.append(room_id)
+        raise RuntimeError("room already exists")
+
+    async def delete_room(_room_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(adapter, "_create_livekit_room", create_room)
+    monkeypatch.setattr(adapter, "_delete_livekit_room", delete_room)
+    monkeypatch.setattr(adapter, "_room_join_token", lambda *_args: "jwt")
+
+    app = create_app()
+    app.state.voice_gateway = VoiceGateway(
+        provider=adapter,
+        session_manager=SessionManager(
+            hermes_client=FakeHermesClient(), default_profile="voice-agent", max_sessions=1
+        ),
+        audio_manager=AudioSessionManager(),
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        joined = await client.post(
+            "/telephony/livekit/webhook",
+            headers=AUTH_HEADERS,
+            json={
+                "event": "participant_joined",
+                "room": {"name": "sip-room-existing"},
+                "participant": {
+                    "identity": "sip-participant-1",
+                    "attributes": {
+                        "sip.callID": "call-sdk-webhook",
+                        "sip.phoneNumber": "+15551234567",
+                    },
+                },
+            },
+        )
+        calls = await client.get("/calls", headers=AUTH_HEADERS)
+
+    assert joined.status_code == 202
+    assert joined.json()["callId"] == "call-sdk-webhook"
+    assert created_rooms == []
+    assert fake_room.connected is True
+    assert fake_room.handlers["track_subscribed"]
+    assert calls.status_code == 200
+    assert calls.json()[0]["callId"] == "call-sdk-webhook"
+    assert calls.json()[0]["livekitRoomId"] == "sip-room-existing"
+
+    await app.state.voice_gateway.end_call_id("call-sdk-webhook")
+
+
+@pytest.mark.asyncio
+async def test_livekit_sdk_webhook_existing_room_listener_failure_does_not_delete_room(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from voice_agent.core.session_manager import SessionManager
+    from voice_agent.hermes.fake import FakeHermesClient
+    from voice_agent.telephony.gateway import VoiceGateway
+    from voice_agent.telephony.livekit import LiveKitAdapter
+
+    class FailingRoom:
+        def on(self, _event: str, _handler: object) -> None:
+            return None
+
+        async def connect(self, _url: str, _token: str) -> None:
+            raise RuntimeError("rtc unavailable")
+
+    adapter = LiveKitAdapter(
+        livekit_url="ws://livekit:7880",
+        api_key="devkey",
+        api_secret="secret",
+        control_mode="sdk",
+        rtc_factory=FailingRoom,
+    )
+    deleted_rooms: list[str] = []
+
+    async def create_room(_room_id: str) -> None:
+        raise AssertionError("webhook-observed SIP rooms must not be created")
+
+    async def delete_room(room_id: str) -> None:
+        deleted_rooms.append(room_id)
+
+    monkeypatch.setattr(adapter, "_create_livekit_room", create_room)
+    monkeypatch.setattr(adapter, "_delete_livekit_room", delete_room)
+    monkeypatch.setattr(adapter, "_room_join_token", lambda *_args: "jwt")
+
+    app = create_app()
+    app.state.voice_gateway = VoiceGateway(
+        provider=adapter,
+        session_manager=SessionManager(
+            hermes_client=FakeHermesClient(), default_profile="voice-agent", max_sessions=1
+        ),
+        audio_manager=AudioSessionManager(),
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        with pytest.raises(RuntimeError, match="rtc unavailable"):
+            await client.post(
+                "/telephony/livekit/webhook",
+                headers=AUTH_HEADERS,
+                json={
+                    "event": "participant_joined",
+                    "room": {"name": "sip-room-listener-fail"},
+                    "participant": {
+                        "identity": "sip-participant-2",
+                        "attributes": {"sip.callID": "call-listener-fail"},
+                    },
+                },
+            )
+
+    assert deleted_rooms == []
+
+
+@pytest.mark.asyncio
 async def test_livekit_sdk_listener_connect_failure_surfaces_before_call_is_connected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
