@@ -56,4 +56,25 @@ grep -q 'event: completed' "${TMP_DIR}/stream.txt"
 request DELETE "/sessions/${SESSION_ID}" '' "${TMP_DIR}/close.json"
 grep -q '"closed"' "${TMP_DIR}/close.json"
 
+request POST /telephony/livekit/events/incoming-call \
+  '{"callId":"smoke-call-1","roomId":"smoke-room-1","callerId":"smoke"}' \
+  "${TMP_DIR}/incoming-call.json"
+grep -q '"callId":"smoke-call-1"' "${TMP_DIR}/incoming-call.json"
+grep -q '"runtimeSessionId"' "${TMP_DIR}/incoming-call.json"
+
+request POST /telephony/livekit/events/audio-frame \
+  '{"callId":"smoke-call-1","payloadSize":320,"timestampMs":1}' \
+  "${TMP_DIR}/audio-frame.json"
+grep -q '"packetCount":1' "${TMP_DIR}/audio-frame.json"
+
+request GET /calls '' "${TMP_DIR}/calls.json"
+grep -q '"packetCount":1' "${TMP_DIR}/calls.json"
+request GET /rooms '' "${TMP_DIR}/rooms.json"
+grep -q '"livekitRoomId":"smoke-room-1"' "${TMP_DIR}/rooms.json"
+
+request POST /telephony/livekit/events/call-ended \
+  '{"callId":"smoke-call-1","disconnectReason":"smoke_complete"}' \
+  "${TMP_DIR}/call-ended.json"
+grep -q '"status":"ended"' "${TMP_DIR}/call-ended.json"
+
 echo "Smoke test passed for ${BASE_URL}"
