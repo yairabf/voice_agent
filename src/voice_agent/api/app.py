@@ -1,3 +1,4 @@
+import inspect
 import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -25,6 +26,7 @@ from voice_agent.models.schemas import (
     CreateSessionResponse,
     HealthResponse,
     IncomingCallRequest,
+    LiveKitWebhookResponse,
     MessageAcceptedResponse,
     MessageRequest,
     ReadyResponse,
@@ -79,23 +81,108 @@ def _room_response(room: RoomState) -> RoomMetadataResponse:
     )
 
 
+def _livekit_webhook_event_name(payload: dict[str, Any]) -> str:
+    return str(payload.get("event") or payload.get("type") or "")
+
+
+def _livekit_webhook_room_name(payload: dict[str, Any]) -> str | None:
+    room = payload.get("room")
+    if isinstance(room, dict):
+        value = room.get("name") or room.get("sid")
+        return str(value) if value else None
+    if isinstance(room, str):
+        return room
+    return None
+
+
+def _livekit_webhook_participant_attrs(payload: dict[str, Any]) -> dict[str, str]:
+    participant = payload.get("participant")
+    attrs = participant.get("attributes", {}) if isinstance(participant, dict) else {}
+    if isinstance(attrs, dict):
+        return {str(key): str(value) for key, value in attrs.items()}
+    return {}
+
+
+def _livekit_webhook_call_id(payload: dict[str, Any], room_id: str) -> str:
+    participant = payload.get("participant")
+    attrs = _livekit_webhook_participant_attrs(payload)
+    for key in ("sip.callID", "sip.callId", "callId", "call_id"):
+        value = attrs.get(key)
+        if value:
+            return value
+    if isinstance(participant, dict):
+        identity = participant.get("identity")
+        if identity:
+            return str(identity)
+    return f"livekit-{room_id}"
+
+
+def _livekit_webhook_caller_id(payload: dict[str, Any]) -> str | None:
+    participant = payload.get("participant")
+    attrs = _livekit_webhook_participant_attrs(payload)
+    for key in ("sip.phoneNumber", "sip.from", "callerId", "caller_id"):
+        value = attrs.get(key)
+        if value:
+            return value
+    if isinstance(participant, dict):
+        name = participant.get("name")
+        if name:
+            return str(name)
+    return None
+
+
+def _livekit_webhook_is_sip_participant(payload: dict[str, Any]) -> bool:
+    participant = payload.get("participant")
+    attrs = _livekit_webhook_participant_attrs(payload)
+    if any(key.startswith("sip.") for key in attrs):
+        return True
+    if isinstance(participant, dict):
+        identity = str(participant.get("identity") or "")
+        name = str(participant.get("name") or "")
+        return identity.startswith("sip") or name.startswith("sip")
+    return False
+
+
+def _bearer_token(request: Request) -> str | None:
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() == "bearer" and token:
+        return token
+    return None
+
+
 def _authorize_telephony_event(request: Request) -> None:
     settings = _settings(request)
     token = settings.telephony_event_token
     if token:
-        expected = f"Bearer {token}"
-        received = request.headers.get("authorization", "")
-        if not secrets.compare_digest(received, expected):
+        received = _bearer_token(request)
+        if received is None or not secrets.compare_digest(received, token):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Valid telephony event bearer token is required.",
             )
         return
-    if settings.livekit_control_mode == "sdk":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="TELEPHONY_EVENT_TOKEN must be configured when LIVEKIT_CONTROL_MODE=sdk.",
-        )
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="TELEPHONY_EVENT_TOKEN must be configured for telephony event and metadata APIs.",
+    )
+
+
+def _authorize_livekit_webhook(request: Request, body: bytes) -> None:
+    """Accept real LiveKit webhook JWTs, with the local event token as a dev fallback."""
+    settings = _settings(request)
+    bearer = _bearer_token(request)
+    if bearer and settings.livekit_api_key and settings.livekit_api_secret:
+        try:
+            from livekit import api
+
+            verifier = api.TokenVerifier(settings.livekit_api_key, settings.livekit_api_secret)
+            api.WebhookReceiver(verifier).receive(body.decode(), bearer)
+            return
+        except Exception:
+            # Fall back to TELEPHONY_EVENT_TOKEN below so local/simulated deployments and tests can
+            # keep using the runtime's control-plane token. Invalid LiveKit JWTs still fail there.
+            pass
+    _authorize_telephony_event(request)
 
 
 def _sse(event: str, data: str) -> str:
@@ -122,13 +209,22 @@ def _configure_state(app: FastAPI, settings: Settings) -> None:
         session_manager=session_manager,
         audio_manager=AudioSessionManager(max_buffered_frames=settings.audio_max_buffered_frames),
         max_calls=settings.telephony_max_calls,
+        max_call_history=settings.telephony_call_history_limit,
     )
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     _configure_state(app, get_settings())
-    yield
+    try:
+        yield
+    finally:
+        provider = getattr(app.state.voice_gateway, "_provider", None)
+        close = getattr(provider, "close", None)
+        if callable(close):
+            result = close()
+            if inspect.isawaitable(result):
+                await result
 
 
 def create_app() -> FastAPI:
@@ -217,15 +313,77 @@ def create_app() -> FastAPI:
 
     @app.get("/calls", response_model=list[CallMetadataResponse])
     async def list_calls(request: Request) -> list[CallMetadataResponse]:
+        _authorize_telephony_event(request)
         return [_call_response(call) for call in _voice_gateway(request).list_calls()]
 
     @app.get("/calls/{call_id}", response_model=CallMetadataResponse)
     async def get_call(call_id: str, request: Request) -> CallMetadataResponse:
+        _authorize_telephony_event(request)
         return _call_response(_voice_gateway(request).get_call(call_id))
 
     @app.get("/rooms", response_model=list[RoomMetadataResponse])
     async def list_rooms(request: Request) -> list[RoomMetadataResponse]:
+        _authorize_telephony_event(request)
         return [_room_response(room) for room in _voice_gateway(request).list_rooms()]
+
+    @app.post(
+        "/telephony/livekit/webhook",
+        response_model=LiveKitWebhookResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def livekit_webhook(request: Request) -> LiveKitWebhookResponse:
+        body = await request.body()
+        _authorize_livekit_webhook(request, body)
+        try:
+            payload = await request.json()
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="JSON object required.",
+            ) from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="JSON object required.",
+            )
+        event_name = _livekit_webhook_event_name(payload)
+        room_id = _livekit_webhook_room_name(payload)
+        if room_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="LiveKit room name required.",
+            )
+
+        call_id: str | None = None
+        if event_name in {"participant_joined", "participant_connected"}:
+            if _livekit_webhook_is_sip_participant(payload):
+                call_id = _livekit_webhook_call_id(payload, room_id)
+                call, _created = await _voice_gateway(request).handle_incoming_call(
+                    IncomingCallEvent(
+                        call_id=call_id,
+                        room_id=room_id,
+                        caller_id=_livekit_webhook_caller_id(payload),
+                    )
+                )
+                call_id = call.call_id
+        elif event_name in {
+            "participant_left",
+            "participant_disconnected",
+        } and _livekit_webhook_is_sip_participant(payload):
+            call_id = _livekit_webhook_call_id(payload, room_id)
+            try:
+                call = _voice_gateway(request).get_call(call_id)
+            except CallNotFoundError:
+                call = None
+            if call is not None and call.livekit_room_id == room_id:
+                ended = await _voice_gateway(request).end_call_id(
+                    call.call_id,
+                    disconnect_reason="livekit_participant_left",
+                )
+                call_id = ended.call_id
+            else:
+                call_id = None
+        return LiveKitWebhookResponse(event=event_name, call_id=call_id)
 
     @app.post(
         "/telephony/livekit/events/incoming-call",

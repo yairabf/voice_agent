@@ -103,3 +103,9 @@ class AudioFrameAcceptedResponse(BaseModel):
     accepted: bool = True
     call_id: str = Field(serialization_alias="callId")
     packet_count: int = Field(serialization_alias="packetCount")
+
+
+class LiveKitWebhookResponse(BaseModel):
+    accepted: bool = True
+    event: str
+    call_id: str | None = Field(default=None, serialization_alias="callId")

@@ -28,14 +28,20 @@ class VoiceGateway:
         session_manager: SessionManager,
         audio_manager: AudioSessionManager,
         max_calls: int = 8,
+        max_call_history: int = 100,
     ) -> None:
         self._provider = provider
         self._session_manager = session_manager
         self._audio_manager = audio_manager
         self._max_calls = max_calls
+        self._max_call_history = max_call_history
         self._calls: dict[str, CallState] = {}
         self._rooms: dict[str, RoomState] = {}
         self._incoming_lock = asyncio.Lock()
+        self._lifecycle_lock = asyncio.Lock()
+        bind_gateway = getattr(provider, "bind_gateway", None)
+        if callable(bind_gateway):
+            bind_gateway(self)
 
     async def handle_incoming_call(self, event: IncomingCallEvent) -> tuple[CallState, bool]:
         async with self._incoming_lock:
@@ -56,7 +62,7 @@ class VoiceGateway:
                     status=CallStatus.FAILED,
                     disconnect_reason="livekit_room_already_bound",
                 )
-                self._calls[call.call_id] = call
+                self._record_call(call)
                 return call, True
 
             resource_owning_calls = [
@@ -77,7 +83,7 @@ class VoiceGateway:
                     disconnect_reason="telephony_concurrency_limit",
                     ended_at=now,
                 )
-                self._calls[call.call_id] = call
+                self._record_call(call)
                 return call, True
 
             room_id = await self._provider.prepare_room(event)
@@ -106,7 +112,7 @@ class VoiceGateway:
                         status=CallStatus.FAILED,
                         disconnect_reason="runtime_session_creation_failed",
                     )
-                    self._calls[call.call_id] = call
+                    self._record_call(call)
                 except Exception:
                     call = CallState(
                         call_id=event.call_id,
@@ -118,7 +124,7 @@ class VoiceGateway:
                         status=CallStatus.CLEANUP_FAILED,
                         disconnect_reason="runtime_session_creation_cleanup_failed",
                     )
-                    self._calls[call.call_id] = call
+                    self._record_call(call)
                     self._rooms[room_id] = RoomState(
                         livekit_room_id=room_id,
                         call_id=call.call_id,
@@ -138,7 +144,7 @@ class VoiceGateway:
                 status=status,
                 disconnect_reason=disconnect_reason,
             )
-            self._calls[call.call_id] = call
+            self._record_call(call)
             self._rooms[room_id] = RoomState(
                 livekit_room_id=room_id,
                 call_id=call.call_id,
@@ -181,9 +187,11 @@ class VoiceGateway:
         )
 
     async def end_call(self, event: CallEndedEvent) -> CallState:
-        call = self._require_call(event.call_id)
-        if call.status == CallStatus.ENDED:
-            return call
+        async with self._lifecycle_lock:
+            call = self._require_call(event.call_id)
+            if call.status == CallStatus.ENDED:
+                return call
+            call.status = CallStatus.CLOSING
 
         runtime_error: Exception | None = None
         provider_error: Exception | None = None
@@ -197,7 +205,7 @@ class VoiceGateway:
                         livekit_room_id=room.livekit_room_id,
                         call_id=room.call_id,
                         runtime_session_id=None,
-                        status=CallStatus.CLEANUP_FAILED,
+                        status=CallStatus.CLOSING,
                         created_at=room.created_at,
                     )
             except Exception as exc:  # pragma: no cover - defensive cleanup path
@@ -221,6 +229,7 @@ class VoiceGateway:
         call.disconnect_reason = event.disconnect_reason or call.disconnect_reason
         self._rooms.pop(call.livekit_room_id, None)
         self._audio_manager.close_session(call.call_id)
+        self._prune_call_history()
         return call
 
     def list_calls(self) -> list[CallState]:
@@ -228,6 +237,15 @@ class VoiceGateway:
 
     def get_call(self, call_id: str) -> CallState:
         return self._require_call(call_id)
+
+    def get_call_by_room(self, room_id: str) -> CallState:
+        room = self._rooms.get(room_id)
+        if room is not None:
+            return self._require_call(room.call_id)
+        for call in self._calls.values():
+            if call.livekit_room_id == room_id:
+                return call
+        raise CallNotFoundError(f"No call found for room '{room_id}'.")
 
     def list_rooms(self) -> list[RoomState]:
         return sorted(self._rooms.values(), key=lambda room: room.created_at)
@@ -251,6 +269,30 @@ class VoiceGateway:
 
     def _require_active_call(self, call_id: str) -> CallState:
         call = self._require_call(call_id)
-        if call.status in {CallStatus.ENDED, CallStatus.CLEANUP_FAILED, CallStatus.FAILED}:
+        if call.status in {
+            CallStatus.CLOSING,
+            CallStatus.ENDED,
+            CallStatus.CLEANUP_FAILED,
+            CallStatus.FAILED,
+        }:
             raise CallNotFoundError(f"Call '{call_id}' is not active (status={call.status}).")
         return call
+
+    def _record_call(self, call: CallState) -> None:
+        self._calls[call.call_id] = call
+        self._prune_call_history()
+
+    def _prune_call_history(self) -> None:
+        overflow = len(self._calls) - self._max_call_history
+        if overflow <= 0:
+            return
+        prunable = sorted(
+            (
+                call
+                for call in self._calls.values()
+                if call.status in {CallStatus.ENDED, CallStatus.FAILED, CallStatus.CLEANUP_FAILED}
+            ),
+            key=lambda call: call.ended_at or call.created_at,
+        )
+        for call in prunable[:overflow]:
+            self._calls.pop(call.call_id, None)

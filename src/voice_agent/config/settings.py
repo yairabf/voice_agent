@@ -33,8 +33,13 @@ class Settings(BaseSettings):
         validation_alias="LIVEKIT_CONTROL_MODE",
     )
     telephony_event_token: str | None = Field(
-        default=None,
+        default="change-me-local-dev-token",
         validation_alias="TELEPHONY_EVENT_TOKEN",
+    )
+    telephony_call_history_limit: int = Field(
+        default=100,
+        validation_alias="TELEPHONY_CALL_HISTORY_LIMIT",
+        ge=1,
     )
     hermes_integration_mode: Literal["fake", "api"] = Field(
         default="fake",

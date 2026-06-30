@@ -7,6 +7,7 @@ from uuid import uuid4
 class CallStatus(StrEnum):
     CONNECTED = "connected"
     RUNTIME_UNAVAILABLE = "runtime_unavailable"
+    CLOSING = "closing"
     CLEANUP_FAILED = "cleanup_failed"
     ENDED = "ended"
     FAILED = "failed"

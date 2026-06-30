@@ -1,0 +1,13 @@
+# LiveKit SIP local development config for PRD-002.
+# This lets operators run the SIP worker with:
+#   docker compose --profile sip up -d livekit livekit-sip
+# Real trunks/dispatch rules are created with lk/livekit-cli against the same devkey/devsecret.
+
+api_key: devkey
+api_secret: devsecret
+ws_url: ws://livekit:7880
+sip_port: 5060
+rtp_port: 10000-20000
+use_external_ip: false
+logging:
+  level: info
