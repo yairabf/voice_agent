@@ -2,6 +2,8 @@
 set -euo pipefail
 
 BASE_URL="${1:-http://127.0.0.1:8088}"
+TELEPHONY_EVENT_TOKEN="${TELEPHONY_EVENT_TOKEN:-change-me-local-dev-token}"
+TOKEN_ENV_NAME=TELEPHONY_EVENT_TOKEN
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "${TMP_DIR}"' EXIT
 
@@ -17,6 +19,24 @@ request() {
       -o "${out}"
   else
     curl -fsS -X "${method}" "${BASE_URL}${path}" -o "${out}"
+  fi
+}
+
+telephony_request() {
+  local method="$1"
+  local path="$2"
+  local body="${3:-}"
+  local out="$4"
+  if [[ -n "${body}" ]]; then
+    curl -fsS -X "${method}" "${BASE_URL}${path}" \
+      -H 'content-type: application/json' \
+      -H "authorization: Bearer ${!TOKEN_ENV_NAME}" \
+      -d "${body}" \
+      -o "${out}"
+  else
+    curl -fsS -X "${method}" "${BASE_URL}${path}" \
+      -H "authorization: Bearer ${!TOKEN_ENV_NAME}" \
+      -o "${out}"
   fi
 }
 
@@ -55,5 +75,26 @@ grep -q 'event: completed' "${TMP_DIR}/stream.txt"
 
 request DELETE "/sessions/${SESSION_ID}" '' "${TMP_DIR}/close.json"
 grep -q '"closed"' "${TMP_DIR}/close.json"
+
+telephony_request POST /telephony/livekit/events/incoming-call \
+  '{"callId":"smoke-call-1","roomId":"smoke-room-1","callerId":"smoke"}' \
+  "${TMP_DIR}/incoming-call.json"
+grep -q '"callId":"smoke-call-1"' "${TMP_DIR}/incoming-call.json"
+grep -q '"runtimeSessionId"' "${TMP_DIR}/incoming-call.json"
+
+telephony_request POST /telephony/livekit/events/audio-frame \
+  '{"callId":"smoke-call-1","payloadSize":320,"timestampMs":1}' \
+  "${TMP_DIR}/audio-frame.json"
+grep -q '"packetCount":1' "${TMP_DIR}/audio-frame.json"
+
+telephony_request GET /calls '' "${TMP_DIR}/calls.json"
+grep -q '"packetCount":1' "${TMP_DIR}/calls.json"
+telephony_request GET /rooms '' "${TMP_DIR}/rooms.json"
+grep -q '"livekitRoomId":"smoke-room-1"' "${TMP_DIR}/rooms.json"
+
+telephony_request POST /telephony/livekit/events/call-ended \
+  '{"callId":"smoke-call-1","disconnectReason":"smoke_complete"}' \
+  "${TMP_DIR}/call-ended.json"
+grep -q '"status":"ended"' "${TMP_DIR}/call-ended.json"
 
 echo "Smoke test passed for ${BASE_URL}"

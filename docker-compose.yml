@@ -1,14 +1,42 @@
 services:
+  livekit:
+    image: livekit/livekit-server:latest
+    command: ["--dev", "--bind", "0.0.0.0"]
+    ports:
+      - "127.0.0.1:7880:7880"
+      - "127.0.0.1:7881:7881"
+      - "127.0.0.1:7882:7882/udp"
+
+  livekit-sip:
+    image: livekit/sip:latest
+    depends_on:
+      - livekit
+    volumes:
+      - ./configs/livekit-sip.yaml:/etc/livekit-sip.yaml:ro
+    command: ["--config", "/etc/livekit-sip.yaml"]
+    ports:
+      - "127.0.0.1:5060:5060/udp"
+      - "127.0.0.1:5060:5060/tcp"
+    profiles:
+      - sip
+
   voice-agent:
     build: .
     image: voice-agent:local
+    depends_on:
+      - livekit
     ports:
-      - "${VOICE_RUNTIME_PORT:-8088}:8088"
+      - "127.0.0.1:${VOICE_RUNTIME_PORT:-8088}:8088"
     env_file:
       - .env.example
     environment:
       VOICE_RUNTIME_PORT: 8088
       HERMES_INTEGRATION_MODE: fake
+      LIVEKIT_URL: ws://livekit:7880
+      LIVEKIT_API_KEY: devkey
+      LIVEKIT_API_SECRET: devsecret
+      LIVEKIT_CONTROL_MODE: simulated
+      TELEPHONY_EVENT_TOKEN: ${TELEPHONY_EVENT_TOKEN:-change-me-local-dev-token}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/health', timeout=2)"]
       interval: 10s

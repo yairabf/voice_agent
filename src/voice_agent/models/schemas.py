@@ -58,3 +58,54 @@ class VersionResponse(BaseModel):
     commit: str
     branch: str
     deployed_at: str | None = Field(default=None, serialization_alias="deployedAt")
+
+
+class IncomingCallRequest(BaseModel):
+    call_id: str | None = Field(default=None, validation_alias="callId")
+    room_id: str = Field(validation_alias="roomId")
+    caller_id: str | None = Field(default=None, validation_alias="callerId")
+
+
+class AudioFrameRequest(BaseModel):
+    call_id: str = Field(validation_alias="callId")
+    payload_size: int = Field(validation_alias="payloadSize", ge=0, le=1_048_576)
+    timestamp_ms: int | None = Field(default=None, validation_alias="timestampMs")
+
+
+class CallEndedRequest(BaseModel):
+    call_id: str = Field(validation_alias="callId")
+    disconnect_reason: str | None = Field(default=None, validation_alias="disconnectReason")
+
+
+class CallMetadataResponse(BaseModel):
+    call_id: str = Field(serialization_alias="callId")
+    livekit_room_id: str = Field(serialization_alias="livekitRoomId")
+    runtime_session_id: str | None = Field(default=None, serialization_alias="runtimeSessionId")
+    caller_id: str | None = Field(default=None, serialization_alias="callerId")
+    created_at: datetime = Field(serialization_alias="createdAt")
+    connected_at: datetime | None = Field(default=None, serialization_alias="connectedAt")
+    ended_at: datetime | None = Field(default=None, serialization_alias="endedAt")
+    status: str
+    packet_count: int = Field(serialization_alias="packetCount")
+    disconnect_reason: str | None = Field(default=None, serialization_alias="disconnectReason")
+    duration_seconds: float | None = Field(default=None, serialization_alias="durationSeconds")
+
+
+class RoomMetadataResponse(BaseModel):
+    livekit_room_id: str = Field(serialization_alias="livekitRoomId")
+    call_id: str = Field(serialization_alias="callId")
+    runtime_session_id: str | None = Field(default=None, serialization_alias="runtimeSessionId")
+    status: str
+    created_at: datetime = Field(serialization_alias="createdAt")
+
+
+class AudioFrameAcceptedResponse(BaseModel):
+    accepted: bool = True
+    call_id: str = Field(serialization_alias="callId")
+    packet_count: int = Field(serialization_alias="packetCount")
+
+
+class LiveKitWebhookResponse(BaseModel):
+    accepted: bool = True
+    event: str
+    call_id: str | None = Field(default=None, serialization_alias="callId")

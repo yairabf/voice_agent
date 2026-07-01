@@ -17,8 +17,30 @@ class Settings(BaseSettings):
     default_profile: str = Field(default="voice-agent", validation_alias="DEFAULT_PROFILE")
     session_timeout: str = Field(default="30m", validation_alias="SESSION_TIMEOUT")
     max_sessions: int = Field(default=1, validation_alias="MAX_SESSIONS", ge=1, le=1)
+    telephony_max_calls: int = Field(default=8, validation_alias="TELEPHONY_MAX_CALLS", ge=1)
+    audio_max_buffered_frames: int = Field(
+        default=16,
+        validation_alias="AUDIO_MAX_BUFFERED_FRAMES",
+        ge=0,
+    )
     log_level: str = Field(default="info", validation_alias="LOG_LEVEL")
     voice_runtime_port: int = Field(default=8088, validation_alias="VOICE_RUNTIME_PORT")
+    livekit_url: str | None = Field(default=None, validation_alias="LIVEKIT_URL")
+    livekit_api_key: str | None = Field(default=None, validation_alias="LIVEKIT_API_KEY")
+    livekit_api_secret: str | None = Field(default=None, validation_alias="LIVEKIT_API_SECRET")
+    livekit_control_mode: Literal["simulated", "sdk"] = Field(
+        default="simulated",
+        validation_alias="LIVEKIT_CONTROL_MODE",
+    )
+    telephony_event_token: str | None = Field(
+        default="change-me-local-dev-token",
+        validation_alias="TELEPHONY_EVENT_TOKEN",
+    )
+    telephony_call_history_limit: int = Field(
+        default=100,
+        validation_alias="TELEPHONY_CALL_HISTORY_LIMIT",
+        ge=1,
+    )
     hermes_integration_mode: Literal["fake", "api"] = Field(
         default="fake",
         validation_alias="HERMES_INTEGRATION_MODE",
